@@ -63,6 +63,10 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+int             num_free_pages(void);
+int             getref(uint64 pa);
+int             incref(uint64 pa);
+int             decref(uint64 pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -164,6 +168,8 @@ void            uvminit(pagetable_t, uchar *, uint);
 uint64          uvmalloc(pagetable_t, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
+int             uvmcow(pagetable_t, pagetable_t, uint64);
+uint64            handle_cowpagefault(uint64 va, struct proc*);
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
 void            uvmclear(pagetable_t, uint64);
@@ -185,3 +191,5 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+void printwalk(pagetable_t pagetable, int depth);
