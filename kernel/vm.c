@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -105,14 +107,13 @@ walkaddr(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
   uint64 pa;
-
   if(va >= MAXVA)
     return 0;
 
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     return 0;
-  if((*pte & PTE_V) == 0)
+  if(!(*pte & PTE_V))
     return 0;
   if((*pte & PTE_U) == 0)
     return 0;
@@ -171,7 +172,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
+    if(!(*pte & PTE_V))
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
@@ -324,6 +325,116 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
+/* Copy on write uvmcopy */
+int
+uvmcow(pagetable_t old, pagetable_t new, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      panic("uvmcow: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("uvmcow: page not present");
+
+    // Remove write permissions from parent page
+    *pte &= ~PTE_W;
+    // Set PTE_COW to flag this as made through copy-on-write
+    *pte |= PTE_COW;
+
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      goto err;
+    }
+    // Increment reference count for this page
+    incref(pa);
+  }
+
+  // Flush TLB
+  sfence_vma();
+  return 0;
+
+ err:
+  uvmunmap(new, 0, i / PGSIZE, 1);
+  sfence_vma();
+  return -1;
+}
+
+// Makes a shared page into a new copy that is writable
+// Returns the physical address of the memory
+uint64 handle_cowpagefault(uint64 va, struct proc* p)
+{
+  va = PGROUNDDOWN(va);
+  pte_t *pte;
+
+  // Check to make sure va is in legal range
+  if(va >= MAXVA || (pte = walk(p->pagetable, va, 0)) == 0 || !(*pte & PTE_V) || !(*pte & PTE_U))
+  {
+    printf("Illegal memory access from process %d with pid %d\n", p->name, p->pid);
+    p->killed = 1;
+    return 0;
+  }
+
+  // Already is writable...
+  if(*pte & PTE_W){
+    printf("va: %p\n", va);
+    panic("Page fault already writeable");
+  }
+
+  uint64 pa = PTE2PA(*pte);
+  int refs = getref(pa);
+
+  // If process does not share a page
+  if(refs == 1)
+  {
+    // Simply allow writing
+    *pte |= PTE_W;
+
+    // Flush TLB
+    sfence_vma();
+
+    return pa;
+  }
+  // If process does share pages
+  else if (refs > 1)
+  {
+    // Save flags for mapping later
+    uint64 flags = PTE_FLAGS(*pte);
+
+    // allocate a new memory page for the process
+    char *mem;
+    if((mem = kalloc()) == 0) {
+      printf("Page fault out of memory, kill proc %s with pid %d\n", p->name, p->pid);
+    p->killed = 1;
+      return 0;
+    }
+
+    // Unmap current page => has side effect of calling kfree() which decrements counter for us
+    uvmunmap(p->pagetable, va, 1, 1);
+
+    // copy the memory from the old page to the new page
+    memmove(mem, (void *)pa, PGSIZE);
+
+    // Remap new physical memory to the virtual memory
+    // or the PTE_W flag so we can write to it now
+    mappages(p->pagetable, va, PGSIZE, (uint64)mem, flags | PTE_W);
+
+    // Flush TLB
+    sfence_vma();
+
+    return (uint64)mem;
+  }
+  // Bad reference count
+  else
+  {
+    printf("ref count: %d\n", refs);
+    panic("Page fault reference count bad value");
+  }
+}
+
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -344,12 +455,28 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t* pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(va0 >= MAXVA)
       return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0)
+      return -1;
+    if(!(*pte & PTE_V))
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
+
+    // If it is not writable then copy it into new page
+    // We don't want to modify shared pages memory
+    if (((*pte & PTE_W) == 0) && (*pte & PTE_COW))
+    {
+      pa0 = handle_cowpagefault(va0, myproc());
+    }
+    
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

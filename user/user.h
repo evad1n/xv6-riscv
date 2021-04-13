@@ -25,6 +25,9 @@ int sleep(int);
 int uptime(void);
 int setprio(int priority);
 
+int pages(void);
+int freepages(void);
+
 // ulib.c
 int stat(const char *, struct stat *);
 char *strcpy(char *, const char *);

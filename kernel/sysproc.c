@@ -8,8 +8,7 @@
 #include "proc.h"
 
 uint64
-sys_exit(void)
-{
+sys_exit(void) {
   int n;
   if (argint(0, &n) < 0)
     return -1;
@@ -18,20 +17,17 @@ sys_exit(void)
 }
 
 uint64
-sys_getpid(void)
-{
+sys_getpid(void) {
   return myproc()->pid;
 }
 
 uint64
-sys_fork(void)
-{
+sys_fork(void) {
   return fork();
 }
 
 uint64
-sys_wait(void)
-{
+sys_wait(void) {
   uint64 p;
   if (argaddr(0, &p) < 0)
     return -1;
@@ -39,8 +35,7 @@ sys_wait(void)
 }
 
 uint64
-sys_sbrk(void)
-{
+sys_sbrk(void) {
   int addr;
   int n;
 
@@ -53,8 +48,7 @@ sys_sbrk(void)
 }
 
 uint64
-sys_sleep(void)
-{
+sys_sleep(void) {
   int n;
   uint ticks0;
 
@@ -62,10 +56,8 @@ sys_sleep(void)
     return -1;
   acquire(&tickslock);
   ticks0 = ticks;
-  while (ticks - ticks0 < n)
-  {
-    if (myproc()->killed)
-    {
+  while (ticks - ticks0 < n)   {
+    if (myproc()->killed)     {
       release(&tickslock);
       return -1;
     }
@@ -76,8 +68,7 @@ sys_sleep(void)
 }
 
 uint64
-sys_kill(void)
-{
+sys_kill(void) {
   int pid;
 
   if (argint(0, &pid) < 0)
@@ -88,8 +79,7 @@ sys_kill(void)
 // return how many clock tick interrupts have occurred
 // since start.
 uint64
-sys_uptime(void)
-{
+sys_uptime(void) {
   uint xticks;
 
   acquire(&tickslock);
@@ -100,13 +90,11 @@ sys_uptime(void)
 
 // Set's a process's priority for scheduling
 uint64
-sys_setprio(void)
-{
+sys_setprio(void) {
   int priority;
 
   // Get argument
-  if (argint(0, &priority) < 0)
-  {
+  if (argint(0, &priority) < 0)   {
     printf("No params\n");
     return -1;
   }
@@ -116,8 +104,7 @@ sys_setprio(void)
     return getpriority();
 
   // Only accept priority levels 1-MAXPRIORITY
-  if (priority > MAXPRIORITY)
-  {
+  if (priority > MAXPRIORITY)   {
     printf("Only priority level 1-%d accepted\n", MAXPRIORITY);
     return -1;
   }
@@ -126,4 +113,54 @@ sys_setprio(void)
   setpriority(priority);
   printf("Priority set to %d\n", priority);
   return 0;
+}
+// Recursively print page-table pages.
+void
+printwalk(pagetable_t pagetable, int depth) {
+  // there are 2^9 = 512 PTEs in a page table.
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+
+    // If it is a valid page table
+    if (pte & PTE_V)     {
+      if (depth == 0)
+        printf("\n");
+
+      // Show nested structure
+      for (int i = 0; i < depth; i++)       {
+        if (i == depth - 1)         {
+          printf("|\n");
+          for (int i = 0; i < depth - 1; i++)
+            printf("      ");
+          printf("+---");
+        }         else
+          printf("      ");
+      }
+
+      // Print info
+      uint64 pa = PTE2PA(pte);
+      printf("> Page %d: pte %p, pa %p, refs: %d, writable: %s\n", i, pte, pa, getref(pa), (pte & PTE_W) ? "True" : "False");
+
+      // If pointing to a lower-level page table
+      if (!(pte & (PTE_R | PTE_W | PTE_X)))       {
+        uint64 child = PTE2PA(pte);
+        printwalk((pagetable_t)child, depth + 1);
+      }
+    }
+  }
+}
+
+// proc data in kernel/proc.h
+uint64
+sys_pages(void) {
+  pagetable_t pagetable = myproc()->pagetable;
+  printf("\npage table %p\n", pagetable);
+  printwalk(pagetable, 0);
+  printf("\n");
+  return 0;
+}
+
+uint64
+sys_freepages(void) {
+  return num_free_pages();
 }

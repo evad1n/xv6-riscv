@@ -47,6 +47,9 @@
 #define KERNBASE 0x80000000L
 #define PHYSTOP (KERNBASE + 128*1024*1024)
 
+// Convert physical address to index into page references array
+#define PA2RIDX(pa) (((uint64)pa - KERNBASE) >> PGSHIFT)
+
 // map the trampoline page to the highest address,
 // in both user and kernel space.
 #define TRAMPOLINE (MAXVA - PGSIZE)
